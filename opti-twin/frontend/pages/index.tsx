@@ -1,0 +1,166 @@
+import Head from "next/head";
+import { useEffect, useState } from "react";
+import { useLiveFeed } from "../lib/ws";
+import KPIBanner from "../components/KPIBanner";
+import EnergyChart from "../components/EnergyChart";
+import ThermalGauge from "../components/ThermalGauge";
+import EAFStatusCard from "../components/EAFStatusCard";
+import XAIDecisionLog from "../components/XAIDecisionLog";
+import Controls from "../components/Controls";
+import DynamicPricingPanel from "../components/DynamicPricingPanel";
+import PricingEventLog from "../components/PricingEventLog";
+import LogViewer from "../components/LogViewer";
+import CommandPalette from "../components/search/CommandPalette";
+import SavedSearchBanner from "../components/search/SavedSearchBanner";
+import { useSearchFocus } from "../lib/searchFocus";
+import { getSearchHealth, type SearchHealth } from "../lib/search";
+
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+
+const HEALTH_POLL_MS = 60_000;
+
+export default function Dashboard() {
+  const frame = useLiveFeed();
+  const [stats, setStats] = useState<{
+    egp_saved_today: number;
+    co2_saved_kg: number;
+    maintenance_alerts_today?: number;
+    avg_maintenance_risk?: number;
+    avg_operational_efficiency?: number;
+    avg_process_stability?: number;
+    idle_minutes_today?: number;
+  }>({ egp_saved_today: 0, co2_saved_kg: 0 });
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/v1/stats`);
+        if (res.ok) {
+          const data = await res.json();
+          setStats(data);
+        }
+      } catch {}
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const t = frame.telemetry;
+  const peakActive = !!(t?.tou_mode && t?.is_peak);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const { focused } = useSearchFocus();
+  const [searchHealth, setSearchHealth] = useState<SearchHealth | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const h = await getSearchHealth();
+        if (!cancelled) setSearchHealth(h);
+      } catch {
+        if (!cancelled) setSearchHealth({ meili: "down", docs: 0 });
+      }
+    };
+    tick();
+    const id = setInterval(tick, HEALTH_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  return (
+    <>
+      <Head>
+        <title>Opti-Twin · Live Dashboard</title>
+      </Head>
+      <div className="min-h-screen px-4 md:px-8 py-6">
+        <header className="flex items-baseline justify-between mb-5">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-bold text-white">
+              Opti-Twin <span className="text-flame-400">Live</span>
+            </h1>
+            <p className="text-xs text-steel-100/60 mt-1">
+              EAF Energy Optimization · NextCity AI 2026
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setPaletteOpen(true)}
+              className="hidden md:flex items-center gap-2 glass rounded-xl px-3 py-1.5 text-xs text-steel-100/80 hover:bg-steel-700/60 transition-colors"
+              title="Search decisions, crises, safety overrides — ⌘K"
+              aria-label="Open search palette"
+            >
+              <span aria-hidden="true">🔍</span>
+              <span>Search</span>
+              {searchHealth && searchHealth.meili === "ok" && (
+                <span className="hidden lg:inline text-[10px] text-steel-100/50 border-l border-steel-500/30 pl-2 ml-1">
+                  indexed: {searchHealth.docs.toLocaleString()}
+                </span>
+              )}
+              {searchHealth?.meili === "down" && (
+                <span className="hidden lg:inline text-[10px] text-red-300/70 border-l border-red-500/30 pl-2 ml-1">
+                  index down
+                </span>
+              )}
+              <kbd className="rounded bg-steel-700/60 px-1.5 py-0.5 text-[10px]">⌘K</kbd>
+            </button>
+            <ConnectionBadge state={frame.connection} />
+          </div>
+        </header>
+
+        <SavedSearchBanner onOpenPalette={() => setPaletteOpen(true)} />
+
+        <KPIBanner
+          telemetry={t}
+          lastRec={frame.recommendations[0]}
+          egpSavedToday={stats.egp_saved_today}
+          co2SavedKg={stats.co2_saved_kg}
+          maintenanceAlertsToday={stats.maintenance_alerts_today ?? 0}
+          avgMaintenanceRisk={stats.avg_maintenance_risk ?? 0}
+          avgOperationalEfficiency={stats.avg_operational_efficiency ?? 0}
+          avgProcessStability={stats.avg_process_stability ?? 0}
+        />
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <EnergyChart data={frame.energySeries} peakActive={peakActive} />
+          <ThermalGauge
+            bath={t?.furnace_bath_temp ?? 1300}
+            wall={t?.wall_panel_temp ?? 100}
+          />
+          <EAFStatusCard t={t} />
+        </div>
+
+        <div className="grid grid-cols-1 mt-4">
+          <XAIDecisionLog items={frame.recommendations} focused={focused} />
+        </div>
+
+        <Controls />
+
+        <DynamicPricingPanel livePrice={frame.livePrice} />
+
+        <PricingEventLog />
+
+        <LogViewer focused={focused} />
+
+        <footer className="text-center text-xs text-steel-100/40 mt-6 py-4 border-t border-white/5">
+          Tariff: 1.60 EGP/kWh · Furnace ref: Ezz Flat Steel Ain Sokhna EAF #2 · Grid CO₂: 0.50 kg/kWh · Numbers are modelled estimates.
+        </footer>
+      </div>
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
+    </>
+  );
+}
+
+function ConnectionBadge({ state }: { state: string }) {
+  const color =
+    state === "open" ? "bg-emerald-500" : state === "connecting" ? "bg-amber-500" : "bg-red-500";
+  const label =
+    state === "open" ? "Live" : state === "connecting" ? "Connecting…" : "Reconnecting…";
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className={`w-2 h-2 rounded-full ${color} animate-pulse`} />
+      <span className="text-steel-100/70">{label}</span>
+    </div>
+  );
+}
